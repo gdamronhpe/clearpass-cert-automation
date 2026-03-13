@@ -1,0 +1,153 @@
+---
+- name: Validate required vars for current certificate discovery
+  ansible.builtin.assert:
+    that:
+      - clearpass_client_id | length > 0
+      - clearpass_client_secret | length > 0
+      - clearpass_api_path | length > 0
+      - clearpass_discovery_services | length > 0
+
+- name: Load discovered UUID map file when not already populated
+  ansible.builtin.include_vars:
+    file: "{{ clearpass_cluster_discovery_output }}"
+    name: clearpass_discovery_file
+  when: discovered_server_uuid_map | length == 0
+  delegate_to: localhost
+
+- name: Resolve effective discovered UUID map
+  ansible.builtin.set_fact:
+    clearpass_discovered_server_uuid_map_effective: >-
+      {{
+        discovered_server_uuid_map
+        if (discovered_server_uuid_map | length > 0)
+        else (clearpass_discovery_file.discovered_server_uuid_map | default({}))
+      }}
+
+- name: Build cluster-wide discovered UUID list
+  ansible.builtin.set_fact:
+    clearpass_discovered_uuids_for_host: >-
+      {{
+        (
+          clearpass_discovered_server_uuid_map_effective
+          | dict2items
+          | map(attribute='value')
+          | list
+          | flatten
+          | select('string')
+          | list
+          | unique
+        )
+        if (clearpass_discovered_server_uuid_map_effective is mapping)
+        else []
+      }}
+
+- name: Build default query targets from discovered UUID map
+  ansible.builtin.set_fact:
+    clearpass_default_cert_query_targets: "{{ clearpass_default_cert_query_targets | default([]) + [ { 'server_uuid': item.0, 'service_name': item.1 } ] }}"
+  loop: "{{ (clearpass_discovered_uuids_for_host | default([])) | product(clearpass_discovery_services) | list }}"
+
+- name: Resolve certificate query targets for this publisher
+  ansible.builtin.set_fact:
+    clearpass_cert_query_targets: >-
+      {{
+        clearpass_cert_query_map[inventory_hostname]
+        if (
+          clearpass_cert_query_map is mapping
+          and clearpass_cert_query_map[inventory_hostname] is defined
+          and clearpass_cert_query_map[inventory_hostname] | length > 0
+        )
+        else (clearpass_default_cert_query_targets | default([]))
+      }}
+
+- name: Validate certificate query targets exist for this publisher
+  ansible.builtin.assert:
+    that:
+      - clearpass_cert_query_targets | length > 0
+    fail_msg: "No certificate discovery targets for {{ inventory_hostname }}. Define clearpass_cert_query_map for this host or provide discovered_server_uuid_map in {{ clearpass_cluster_discovery_output }}."
+
+- name: Validate certificate query target schema
+  ansible.builtin.assert:
+    that:
+      - item.server_uuid is defined
+      - item.server_uuid | string | length > 0
+      - item.service_name is defined
+      - item.service_name | string | length > 0
+    fail_msg: "Invalid clearpass_cert_query_map entry for {{ inventory_hostname }}: {{ item }}"
+  loop: "{{ clearpass_cert_query_targets }}"
+  loop_control:
+    label: "{{ inventory_hostname }} uuid={{ item.server_uuid | default('missing') }} service={{ item.service_name | default('missing') }}"
+
+- name: Authenticate to ClearPass OAuth
+  ansible.builtin.uri:
+    url: "{{ clearpass_base_url | default('https://' ~ inventory_hostname) }}{{ clearpass_token_path }}"
+    method: POST
+    body_format: json
+    body:
+      grant_type: client_credentials
+      client_id: "{{ clearpass_client_id }}"
+      client_secret: "{{ clearpass_client_secret }}"
+    validate_certs: "{{ validate_certs | bool }}"
+    status_code: 200
+    return_content: true
+    timeout: "{{ clearpass_request_timeout }}"
+  register: clearpass_oauth
+  no_log: true
+
+- name: Cache OAuth access token
+  ansible.builtin.set_fact:
+    clearpass_access_token: "{{ clearpass_oauth.json.access_token }}"
+  no_log: true
+
+- name: Query current certificates by UUID and service
+  ansible.builtin.uri:
+    url: "{{ clearpass_base_url | default('https://' ~ inventory_hostname) }}{{ clearpass_api_path }}{{ clearpass_server_cert_get_endpoint }}/{{ item.server_uuid }}/{{ item.service_name | urlencode }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ clearpass_access_token }}"
+      Accept: application/json
+    validate_certs: "{{ validate_certs | bool }}"
+    status_code: [200, 404]
+    return_content: true
+    timeout: "{{ clearpass_request_timeout }}"
+  loop: "{{ clearpass_cert_query_targets }}"
+  loop_control:
+    label: "{{ inventory_hostname }} uuid={{ item.server_uuid }} service={{ item.service_name }}"
+  register: clearpass_current_cert_query
+  no_log: true
+
+- name: Normalize current certificate results for this publisher
+  ansible.builtin.set_fact:
+    clearpass_current_cert_results: "{{ clearpass_current_cert_results | default([]) + [ {
+      'server_uuid': item.item.server_uuid,
+      'service_name': item.item.service_name,
+      'http_status': item.status,
+      'found': (item.status == 200),
+      'certificate': (item.json if (item.status == 200 and item.json is mapping) else {})
+    } ] }}"
+  loop: "{{ clearpass_current_cert_query.results }}"
+  loop_control:
+    label: "{{ inventory_hostname }} uuid={{ item.item.server_uuid }} service={{ item.item.service_name }}"
+  no_log: true
+
+- name: Build aggregated certificate discovery output
+  ansible.builtin.set_fact:
+    clearpass_current_certs_by_host: "{{ (clearpass_current_certs_by_host | default({})) | combine({ item: (hostvars[item].clearpass_current_cert_results | default([])) }) }}"
+  loop: "{{ ansible_play_hosts_all }}"
+  run_once: true
+
+- name: Write current certificate discovery file
+  ansible.builtin.copy:
+    dest: "{{ clearpass_current_certs_output }}"
+    content: |
+      # Generated by playbooks/discover_current_certs.yml
+      # Endpoint: {{ clearpass_server_cert_get_endpoint }}
+      {{ {
+        'discovered_current_certs': (clearpass_current_certs_by_host | default({}))
+      } | to_nice_yaml(indent=2) }}
+  delegate_to: localhost
+  run_once: true
+
+- name: Show where current certificate discovery output was written
+  ansible.builtin.debug:
+    msg: "Current certificate discovery written to {{ clearpass_current_certs_output }}"
+  run_once: true

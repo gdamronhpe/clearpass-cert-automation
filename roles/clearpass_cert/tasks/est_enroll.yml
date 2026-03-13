@@ -1,0 +1,174 @@
+---
+- name: Validate required vars for EST enrollment
+  ansible.builtin.assert:
+    that:
+      - clearpass_client_id | length > 0
+      - clearpass_client_secret | length > 0
+      - clearpass_api_path | length > 0
+      - est_username | length > 0
+      - est_password | length > 0
+
+- name: Resolve explicit EST service->server mapping for this publisher
+  ansible.builtin.set_fact:
+    clearpass_est_assignments: "{{ clearpass_est_service_map[inventory_hostname] | default([]) }}"
+
+- name: Validate explicit EST mapping exists for this publisher
+  ansible.builtin.assert:
+    that:
+      - clearpass_est_assignments | length > 0
+    fail_msg: "No clearpass_est_service_map assignments found for {{ inventory_hostname }}."
+
+- name: Validate explicit EST assignments for this publisher
+  ansible.builtin.assert:
+    that:
+      - item.server_uuid is defined
+      - item.service_name is defined
+      - (item.enrollment_profile is defined) or (item.est_profile is defined) or (est_profile | length > 0)
+      - (item.enrollment_profile is not defined) or (item.enrollment_profile in est_enrollment_profiles)
+    fail_msg: "Invalid clearpass_est_service_map entry for {{ inventory_hostname }}: {{ item }}"
+  loop: "{{ clearpass_est_assignments }}"
+  loop_control:
+    label: "{{ inventory_hostname }} uuid={{ item.server_uuid | default('missing') }} service={{ item.service_name | default('missing') }}"
+
+- name: Initialize normalized EST targets
+  ansible.builtin.set_fact:
+    clearpass_est_targets: []
+
+- name: Build normalized EST targets from explicit assignments
+  ansible.builtin.set_fact:
+    clearpass_est_targets: "{{ clearpass_est_targets + [clearpass_est_target] }}"
+  vars:
+    clearpass_est_profile_values: "{{ est_enrollment_profiles[item.enrollment_profile] | default({}) }}"
+    clearpass_private_key_password_resolved: >-
+      {{
+        clearpass_est_profile_values.private_key_password
+        if (clearpass_est_profile_values.private_key_password is defined and clearpass_est_profile_values.private_key_password | length > 0)
+        else (private_key_password if private_key_password | length > 0 else est_private_key_password)
+      }}
+    clearpass_est_target: >-
+      {{
+        {
+          'server_uuid': item.server_uuid,
+          'service_name': item.service_name,
+          'est_base_url': clearpass_est_profile_values.est_base_url | default(est_base_url),
+          'est_profile': clearpass_est_profile_values.est_profile | default(item.est_profile | default(est_profile)),
+          'csr_attributes': (
+            {
+              'subject_CN': clearpass_est_profile_values.subject_CN | default(subject_CN),
+              'private_key_password': clearpass_private_key_password_resolved,
+              'private_key_type': clearpass_est_profile_values.private_key_type | default(private_key_type),
+              'digest_algorithm': clearpass_est_profile_values.digest_algorithm | default(digest_algorithm)
+            }
+            | combine(({'subject_O': clearpass_est_profile_values.subject_O | default(subject_O)} if (clearpass_est_profile_values.subject_O | default(subject_O) | length > 0) else {}), recursive=True)
+            | combine(({'subject_OU': clearpass_est_profile_values.subject_OU | default(subject_OU)} if (clearpass_est_profile_values.subject_OU | default(subject_OU) | length > 0) else {}), recursive=True)
+            | combine(({'subject_L': clearpass_est_profile_values.subject_L | default(subject_L)} if (clearpass_est_profile_values.subject_L | default(subject_L) | length > 0) else {}), recursive=True)
+            | combine(({'subject_ST': clearpass_est_profile_values.subject_ST | default(subject_ST)} if (clearpass_est_profile_values.subject_ST | default(subject_ST) | length > 0) else {}), recursive=True)
+            | combine(({'subject_C': clearpass_est_profile_values.subject_C | default(subject_C)} if (clearpass_est_profile_values.subject_C | default(subject_C) | length > 0) else {}), recursive=True)
+            | combine(({'subject_SAN': clearpass_est_profile_values.subject_SAN | default(subject_SAN)} if (clearpass_est_profile_values.subject_SAN | default(subject_SAN) | length > 0) else {}), recursive=True)
+            | combine(est_csr_attributes | default({}), recursive=True)
+          )
+        }
+      }}
+  loop: "{{ clearpass_est_assignments }}"
+  loop_control:
+    label: >-
+      {{ inventory_hostname }} uuid={{ item.server_uuid }} service={{ item.service_name }}
+      profile={{ item.enrollment_profile | default('default') }}
+  no_log: true
+
+- name: Validate normalized EST targets
+  ansible.builtin.assert:
+    that:
+      - item.est_base_url | length > 0
+      - item.est_profile | length > 0
+      - item.csr_attributes.subject_CN | length > 0
+      - item.csr_attributes.private_key_password | length > 0
+      - item.csr_attributes.private_key_type in clearpass_private_key_type_options
+      - item.csr_attributes.digest_algorithm in clearpass_digest_algorithm_options
+    fail_msg: "Invalid EST target for {{ inventory_hostname }}: {{ item }}"
+  loop: "{{ clearpass_est_targets }}"
+  loop_control:
+    label: "{{ inventory_hostname }} uuid={{ item.server_uuid }} service={{ item.service_name }}"
+  no_log: true
+
+- name: Authenticate to ClearPass OAuth
+  ansible.builtin.uri:
+    url: "{{ clearpass_base_url | default('https://' ~ inventory_hostname) }}{{ clearpass_token_path }}"
+    method: POST
+    body_format: json
+    body:
+      grant_type: client_credentials
+      client_id: "{{ clearpass_client_id }}"
+      client_secret: "{{ clearpass_client_secret }}"
+    validate_certs: "{{ validate_certs | bool }}"
+    status_code: 200
+    return_content: true
+    timeout: "{{ clearpass_request_timeout }}"
+  register: clearpass_oauth
+  no_log: true
+
+- name: Cache OAuth access token
+  ansible.builtin.set_fact:
+    clearpass_access_token: "{{ clearpass_oauth.json.access_token }}"
+  no_log: true
+
+- name: Generate CSR on ClearPass for each UUID and service
+  ansible.builtin.uri:
+    url: "{{ clearpass_base_url | default('https://' ~ inventory_hostname) }}{{ clearpass_api_path }}{{ clearpass_csr_endpoint }}/{{ item.server_uuid }}/{{ item.service_name | urlencode }}"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ clearpass_access_token }}"
+      Content-Type: application/json
+    body_format: json
+    body: "{{ item.csr_attributes }}"
+    validate_certs: "{{ validate_certs | bool }}"
+    status_code: [200, 201]
+    return_content: true
+    timeout: "{{ clearpass_request_timeout }}"
+  loop: "{{ clearpass_est_targets }}"
+  loop_control:
+    label: "{{ inventory_hostname }} uuid={{ item.server_uuid }} service={{ item.service_name }}"
+  register: clearpass_csr_results
+  no_log: true
+
+- name: Enroll CSR with EST server
+  ansible.builtin.uri:
+    url: "{{ item.item.est_base_url | regex_replace('/$', '') }}/.well-known/est/{{ item.item.est_profile }}/simpleenroll"
+    method: POST
+    force_basic_auth: true
+    url_username: "{{ est_username }}"
+    url_password: "{{ est_password }}"
+    headers:
+      Content-Type: application/pkcs10
+      Accept: application/pkcs7-mime
+    body: "{{ item.json.csr_pem }}"
+    validate_certs: "{{ validate_certs | bool }}"
+    status_code: [200, 201]
+    return_content: true
+    timeout: "{{ clearpass_request_timeout }}"
+  loop: "{{ clearpass_csr_results.results }}"
+  loop_control:
+    label: "{{ inventory_hostname }} uuid={{ item.item.server_uuid }} service={{ item.item.service_name }}"
+  register: est_enroll_results
+  no_log: true
+
+- name: Install EST-signed certificate on ClearPass
+  ansible.builtin.uri:
+    url: "{{ clearpass_base_url | default('https://' ~ inventory_hostname) }}{{ clearpass_api_path }}{{ clearpass_est_install_endpoint }}/{{ item.item.item.server_uuid }}/{{ item.item.item.service_name | urlencode }}"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ clearpass_access_token }}"
+      Content-Type: application/json
+    body_format: json
+    body:
+      signed_certificate: "{{ item.content }}"
+      certificate_format: pkcs7
+    validate_certs: "{{ validate_certs | bool }}"
+    status_code: [200, 201, 202, 204]
+    timeout: "{{ clearpass_request_timeout }}"
+  loop: "{{ est_enroll_results.results }}"
+  loop_control:
+    label: "{{ inventory_hostname }} uuid={{ item.item.item.server_uuid }} service={{ item.item.item.service_name }}"
+  register: clearpass_install_results
+  no_log: true
+

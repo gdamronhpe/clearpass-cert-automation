@@ -1,0 +1,47 @@
+---
+# Per-environment server/service assignment maps.
+# Keep this file in inventory/prod/group_vars and out of source control.
+
+# Valid service_name values: RADIUS, RadSec, HTTPS(RSA), HTTPS(ECC)
+
+# PKCS#12 replacement mapping:
+# server_uuid + service_name -> certificate_profile (from group_vars/p12.yml)
+clearpass_service_cert_map:
+  cppm1.example.com:
+    - server_uuid: 11111111-1111-1111-1111-111111111111
+      service_name: HTTPS(RSA)
+      certificate_profile: public_https
+    - server_uuid: 11111111-1111-1111-1111-111111111111
+      service_name: HTTPS(ECC)
+      certificate_profile: internal_admin
+  cppm2.example.com:
+    - server_uuid: 22222222-2222-2222-2222-222222222222
+      service_name: HTTPS(RSA)
+      certificate_profile: public_https
+
+# EST enrollment mapping:
+# server_uuid + service_name, with optional per-target enrollment_profile
+# (from group_vars/est.yml est_enrollment_profiles) or est_profile override
+clearpass_est_service_map:
+  cppm1.example.com:
+    - server_uuid: 11111111-1111-1111-1111-111111111111
+      service_name: RADIUS
+      enrollment_profile: radius_default
+    - server_uuid: 11111111-1111-1111-1111-111111111111
+      service_name: RadSec
+      enrollment_profile: radsec_default
+  cppm2.example.com:
+    - server_uuid: 22222222-2222-2222-2222-222222222222
+      service_name: RADIUS
+      enrollment_profile: radius_default
+
+# Optional read-only cert discovery override mapping:
+# If set for a host, discover_current_certs.yml will query exactly these targets.
+# If not set, it uses discovered_server_uuid_map + clearpass_discovery_services.
+clearpass_cert_query_map: {}
+# clearpass_cert_query_map:
+#   cppm1.example.com:
+#     - server_uuid: 11111111-1111-1111-1111-111111111111
+#       service_name: RADIUS
+#     - server_uuid: 11111111-1111-1111-1111-111111111111
+#       service_name: HTTPS(RSA)

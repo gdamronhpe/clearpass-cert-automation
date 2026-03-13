@@ -1,0 +1,145 @@
+---
+- name: Validate required vars for PKCS#12 replacement
+  ansible.builtin.assert:
+    that:
+      - clearpass_client_id | length > 0
+      - clearpass_client_secret | length > 0
+      - clearpass_api_path | length > 0
+      - clearpass_cert_replace_method | upper in ['POST', 'PUT', 'PATCH']
+      - clearpass_cert_replace_success_codes | length > 0
+      - clearpass_cert_replace_observed_codes | length > 0
+
+- name: Resolve explicit service->server mapping for this publisher
+  ansible.builtin.set_fact:
+    clearpass_replace_assignments: "{{ clearpass_service_cert_map[inventory_hostname] | default([]) }}"
+
+- name: Validate explicit mapping exists for this publisher
+  ansible.builtin.assert:
+    that:
+      - clearpass_replace_assignments | length > 0
+    fail_msg: "No clearpass_service_cert_map assignments found for {{ inventory_hostname }}."
+
+- name: Validate explicit assignments for this publisher
+  ansible.builtin.assert:
+    that:
+      - item.server_uuid is defined
+      - item.service_name is defined
+      - item.certificate_profile is defined
+      - item.certificate_profile in certificate_profiles
+      - certificate_profiles[item.certificate_profile].pkcs12_file_url is defined
+      - certificate_profiles[item.certificate_profile].pkcs12_file_url | length > 0
+      - (certificate_profiles[item.certificate_profile].pkcs12_passphrase is defined) or (pkcs12_passphrase | length > 0)
+    fail_msg: "Invalid clearpass_service_cert_map entry for {{ inventory_hostname }}: {{ item }}"
+  loop: "{{ clearpass_replace_assignments }}"
+  loop_control:
+    label: "{{ inventory_hostname }} uuid={{ item.server_uuid | default('missing') }} service={{ item.service_name | default('missing') }}"
+
+- name: Initialize normalized replacement targets
+  ansible.builtin.set_fact:
+    clearpass_replace_targets: []
+
+- name: Build normalized replacement targets from explicit assignments
+  ansible.builtin.set_fact:
+    clearpass_replace_targets: "{{ clearpass_replace_targets + [ {
+      'server_uuid': item.server_uuid,
+      'service_name': item.service_name,
+      'pkcs12_file_url': certificate_profiles[item.certificate_profile].pkcs12_file_url,
+      'pkcs12_passphrase': certificate_profiles[item.certificate_profile].pkcs12_passphrase | default(pkcs12_passphrase)
+    } ] }}"
+  loop: "{{ clearpass_replace_assignments }}"
+  loop_control:
+    label: "{{ inventory_hostname }} uuid={{ item.server_uuid }} service={{ item.service_name }} profile={{ item.certificate_profile }}"
+
+- name: Authenticate to ClearPass OAuth
+  ansible.builtin.uri:
+    url: "{{ clearpass_base_url | default('https://' ~ inventory_hostname) }}{{ clearpass_token_path }}"
+    method: POST
+    body_format: json
+    body:
+      grant_type: client_credentials
+      client_id: "{{ clearpass_client_id }}"
+      client_secret: "{{ clearpass_client_secret }}"
+    validate_certs: "{{ validate_certs | bool }}"
+    status_code: 200
+    return_content: true
+    timeout: "{{ clearpass_request_timeout }}"
+  register: clearpass_oauth
+  no_log: true
+
+- name: Cache OAuth access token
+  ansible.builtin.set_fact:
+    clearpass_access_token: "{{ clearpass_oauth.json.access_token }}"
+  no_log: true
+
+- name: Replace certificate for each UUID and service
+  ansible.builtin.uri:
+    url: "{{ clearpass_base_url | default('https://' ~ inventory_hostname) }}{{ clearpass_api_path }}{{ clearpass_cert_replace_endpoint }}/{{ item.server_uuid }}/{{ item.service_name | urlencode }}"
+    method: "{{ clearpass_cert_replace_method | upper }}"
+    headers:
+      Authorization: "Bearer {{ clearpass_access_token }}"
+      Content-Type: application/json
+      Accept: application/json
+    body_format: json
+    body:
+      pkcs12_file_url: "{{ item.pkcs12_file_url }}"
+      pkcs12_passphrase: "{{ item.pkcs12_passphrase }}"
+    validate_certs: "{{ validate_certs | bool }}"
+    status_code: "{{ clearpass_cert_replace_observed_codes }}"
+    timeout: "{{ clearpass_request_timeout }}"
+  failed_when: false
+  loop: "{{ clearpass_replace_targets }}"
+  loop_control:
+    label: "{{ inventory_hostname }} uuid={{ item.server_uuid }} service={{ item.service_name }}"
+  register: clearpass_replace_results
+  no_log: true
+
+- name: Initialize replace API failure summary
+  ansible.builtin.set_fact:
+    clearpass_replace_failures: []
+
+- name: Build replace API failure summary
+  ansible.builtin.set_fact:
+    clearpass_replace_failures: "{{ (clearpass_replace_failures | default([])) + [ {
+      'server_uuid': item.item.server_uuid,
+      'service_name': item.item.service_name,
+      'http_status': item.status | default('unknown'),
+      'detail': clearpass_replace_error_detail,
+      'validation_messages': clearpass_replace_validation_messages,
+      'hint': clearpass_replace_error_hint
+    } ] }}"
+  vars:
+    clearpass_replace_validation_messages: "{{ item.json.validation_messages | default([]) }}"
+    clearpass_replace_error_detail: >-
+      {{
+        item.json.detail
+        | default(item.json.message | default(item.msg | default(item.content | default('No API error detail returned.'))))
+      }}
+    clearpass_replace_error_hint: >-
+      {%- if (item.status | int) == 422 and (
+        'private key' in (clearpass_replace_error_detail | lower)
+        or 'private key' in ((clearpass_replace_validation_messages | join(' ')) | lower)
+      ) -%}
+      Verify pkcs12_passphrase, confirm the PKCS#12 includes a private key, and ensure key algorithm matches service (EC key for HTTPS(ECC)).
+      {%- elif (item.status | int) == 406 -%}
+      Verify request headers/body format expected by ClearPass (Accept and Content-Type should be application/json).
+      {%- elif (item.status | int) == 404 -%}
+      Verify server_uuid and service_name exist on this ClearPass cluster node.
+      {%- elif (item.status | int) in [401, 403] -%}
+      Verify OAuth client permissions for server certificate management endpoints.
+      {%- else -%}
+      Review ClearPass API detail and payload values.
+      {%- endif -%}
+  loop: "{{ clearpass_replace_results.results | default([]) }}"
+  when: item.status not in clearpass_cert_replace_success_codes
+  loop_control:
+    label: "{{ inventory_hostname }} uuid={{ item.item.server_uuid }} service={{ item.item.service_name }}"
+
+- name: Fail with readable replace API summary
+  ansible.builtin.assert:
+    that:
+      - clearpass_replace_failures | default([]) | length == 0
+    fail_msg: >-
+      PKCS#12 replacement failed for {{ clearpass_replace_failures | length }} target(s) on {{ inventory_hostname }}:
+      {{ clearpass_replace_failures | to_nice_yaml(indent=2) }}
+
+

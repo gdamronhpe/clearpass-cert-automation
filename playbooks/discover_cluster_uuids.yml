@@ -1,0 +1,9 @@
+---
+- name: Discover ClearPass cluster server UUIDs
+  hosts: publishers
+  connection: local
+  gather_facts: false
+  roles:
+    - role: clearpass_cert
+      vars:
+        clearpass_cert_action: discover_cluster_uuids

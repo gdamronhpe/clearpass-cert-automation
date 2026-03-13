@@ -1,0 +1,82 @@
+---
+clearpass_api_path: /api
+clearpass_token_path: /api/oauth
+clearpass_request_timeout: 60
+validate_certs: true
+
+clearpass_client_id: ''
+clearpass_client_secret: ''
+
+clearpass_cert_replace_endpoint: /server-cert/name
+clearpass_cert_replace_method: PUT
+clearpass_cert_replace_success_codes:
+  - 200
+  - 204
+  - 304
+clearpass_cert_replace_observed_codes:
+  - 200
+  - 204
+  - 304
+  - 400
+  - 401
+  - 403
+  - 404
+  - 406
+  - 415
+  - 422
+  - 500
+clearpass_csr_endpoint: /server-cert/csr
+clearpass_est_install_endpoint: /server-cert/name
+clearpass_cluster_server_endpoint: /cluster/server
+clearpass_server_cert_get_endpoint: /server-cert/name
+clearpass_cluster_discovery_output: "{{ playbook_dir }}/../inventory/prod/group_vars/discovered_server_uuid_map.yml"
+clearpass_current_certs_output: "{{ playbook_dir }}/../inventory/prod/group_vars/discovered_current_certs.yml"
+
+clearpass_service_cert_map: {}
+clearpass_est_service_map: {}
+discovered_server_uuid_map: {}
+clearpass_cert_query_map: {}
+clearpass_discovery_services:
+  - RADIUS
+  - HTTPS(RSA)
+  - HTTPS(ECC)
+  - RadSec
+certificate_profiles: {}
+est_enrollment_profiles: {}
+
+pkcs12_passphrase: ''
+
+est_base_url: ''
+est_profile: ''
+est_username: ''
+est_password: ''
+est_private_key_password: ''
+
+subject_CN: ''
+subject_O: ''
+subject_OU: ''
+subject_L: ''
+subject_ST: ''
+subject_C: ''
+subject_SAN: ''
+private_key_password: ''
+private_key_type: ''
+digest_algorithm: ''
+
+clearpass_private_key_type_options:
+  - 2048-bit rsa
+  - 3072-bit rsa
+  - 4096-bit rsa
+  - nist/secg curve over a 256 bit prime field
+  - nist/secg curve over a 384 bit prime field
+  - nist/secg curve over a 521 bit prime field
+
+clearpass_digest_algorithm_options:
+  - SHA-1
+  - SHA-224
+  - SHA-256
+  - SHA-384
+  - SHA-512
+
+est_csr_attributes: {}
+

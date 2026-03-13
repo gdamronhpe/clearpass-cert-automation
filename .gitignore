@@ -1,0 +1,9 @@
+# Ignore all inventory environments by default
+inventory/*
+
+# Keep the sanitized example inventory tracked
+!inventory/example/
+!inventory/example/**
+
+# Ignore generated artifacts/output files
+generated/*

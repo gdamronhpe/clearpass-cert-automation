@@ -1,0 +1,110 @@
+---
+- name: Validate required vars for preflight
+  ansible.builtin.assert:
+    that:
+      - clearpass_client_id | length > 0
+      - clearpass_client_secret | length > 0
+      - clearpass_api_path | length > 0
+      - clearpass_token_path | length > 0
+    fail_msg: Missing required vars. Check group_vars/clearpass.yml and host_vars/<publisher>.yml.
+
+- name: Check HTTPS/API endpoint reachability
+  block:
+    - name: Probe ClearPass API base endpoint
+      ansible.builtin.uri:
+        url: "{{ clearpass_base_url | default('https://' ~ inventory_hostname) }}{{ clearpass_api_path }}"
+        method: GET
+        validate_certs: "{{ validate_certs | bool }}"
+        status_code: [200, 301, 302, 400, 401, 403, 404, 405]
+        timeout: "{{ clearpass_request_timeout }}"
+      register: clearpass_preflight_api_probe
+      failed_when: false
+
+    - name: Validate API base endpoint responded
+      ansible.builtin.assert:
+        that:
+          - clearpass_preflight_api_probe is defined
+          - clearpass_preflight_api_probe.status is defined
+        fail_msg: API endpoint did not return a usable HTTP response.
+  rescue:
+    - name: Fail with API connectivity guidance
+      ansible.builtin.fail:
+        msg: >-
+          Preflight failed reaching {{ clearpass_base_url | default('https://' ~ inventory_hostname) }}{{ clearpass_api_path }}.
+          Check DNS/hostname, TCP/443 routing, and TLS trust (or temporarily set validate_certs=false to test).
+
+- name: Authenticate to ClearPass OAuth (preflight)
+  block:
+    - name: Request OAuth token
+      ansible.builtin.uri:
+        url: "{{ clearpass_base_url | default('https://' ~ inventory_hostname) }}{{ clearpass_token_path }}"
+        method: POST
+        body_format: json
+        body:
+          grant_type: client_credentials
+          client_id: "{{ clearpass_client_id }}"
+          client_secret: "{{ clearpass_client_secret }}"
+        validate_certs: "{{ validate_certs | bool }}"
+        status_code: [200, 400, 401, 403, 404, 405]
+        return_content: true
+        timeout: "{{ clearpass_request_timeout }}"
+      register: clearpass_preflight_oauth
+      failed_when: false
+      no_log: true
+
+    - name: Validate OAuth success
+      ansible.builtin.assert:
+        that:
+          - clearpass_preflight_oauth.status == 200
+          - clearpass_preflight_oauth.json.access_token is defined
+        fail_msg: >-
+          OAuth preflight failed for {{ inventory_hostname }} (HTTP {{ clearpass_preflight_oauth.status | default('unknown') }}).
+          Verify clearpass_client_id, clearpass_client_secret, and clearpass_token_path.
+
+    - name: Cache preflight OAuth token
+      ansible.builtin.set_fact:
+        clearpass_preflight_access_token: "{{ clearpass_preflight_oauth.json.access_token }}"
+      no_log: true
+  rescue:
+    - name: Fail with OAuth troubleshooting guidance
+      ansible.builtin.fail:
+        msg: >-
+          OAuth request failed for {{ inventory_hostname }}.
+          Check client credentials, token path ({{ clearpass_token_path }}), and API client permissions.
+
+- name: Verify cluster server endpoint authorization and response
+  block:
+    - name: Query cluster/server endpoint
+      ansible.builtin.uri:
+        url: "{{ clearpass_base_url | default('https://' ~ inventory_hostname) }}{{ clearpass_api_path }}{{ clearpass_cluster_server_endpoint }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ clearpass_preflight_access_token }}"
+          Accept: application/json
+        validate_certs: "{{ validate_certs | bool }}"
+        status_code: [200, 401, 403, 404, 406, 415]
+        return_content: true
+        timeout: "{{ clearpass_request_timeout }}"
+      register: clearpass_preflight_cluster
+      failed_when: false
+      no_log: true
+
+    - name: Validate cluster/server API success
+      ansible.builtin.assert:
+        that:
+          - clearpass_preflight_cluster.status == 200
+        fail_msg: >-
+          API preflight failed at {{ clearpass_cluster_server_endpoint }} for {{ inventory_hostname }}
+          (HTTP {{ clearpass_preflight_cluster.status | default('unknown') }}).
+          Check API path, token scope/permissions, and endpoint availability.
+  rescue:
+    - name: Fail with cluster endpoint troubleshooting guidance
+      ansible.builtin.fail:
+        msg: >-
+          Cluster API preflight request failed for {{ inventory_hostname }}.
+          Verify connectivity and that GET {{ clearpass_cluster_server_endpoint }} is supported by your ClearPass version.
+
+- name: Report preflight success
+  ansible.builtin.debug:
+    msg: "Preflight checks passed for {{ inventory_hostname }}."
+

@@ -1,0 +1,9 @@
+---
+- name: Discover current ClearPass service certificates
+  hosts: publishers
+  connection: local
+  gather_facts: false
+  roles:
+    - role: clearpass_cert
+      vars:
+        clearpass_cert_action: discover_current_certs

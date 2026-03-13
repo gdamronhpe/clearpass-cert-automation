@@ -1,0 +1,2 @@
+# Per-publisher secret (encrypt this file with ansible-vault)
+clearpass_client_secret: CHANGE_ME_CPPM1

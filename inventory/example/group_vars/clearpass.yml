@@ -1,0 +1,13 @@
+clearpass_api_path: /api
+clearpass_token_path: /api/oauth
+clearpass_client_id: cert-automation
+validate_certs: true
+clearpass_cert_replace_method: PUT
+
+# Optional certificate discovery settings
+clearpass_discovery_services:
+  - RADIUS
+  - HTTPS(RSA)
+  - HTTPS(ECC)
+  - RadSec
+# clearpass_current_certs_output: "{{ playbook_dir }}/../inventory/prod/group_vars/discovered_current_certs.yml"

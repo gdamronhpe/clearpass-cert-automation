@@ -1,0 +1,44 @@
+---
+- name: Check conventional inventory variable files
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ inventory_dir }}/group_vars/clearpass.yml"
+    - "{{ inventory_dir }}/group_vars/p12.yml"
+    - "{{ inventory_dir }}/group_vars/est.yml"
+    - "{{ inventory_dir }}/group_vars/publishers.yml"
+    - "{{ inventory_dir }}/group_vars/vault.yml"
+    - "{{ inventory_dir }}/group_vars/discovered_server_uuid_map.yml"
+  register: clearpass_group_var_file_stats
+
+- name: Load conventional inventory variable files
+  ansible.builtin.include_vars:
+    file: "{{ item.item }}"
+  loop: "{{ clearpass_group_var_file_stats.results }}"
+  when: item.stat.exists
+
+- name: Validate requested role action
+  ansible.builtin.assert:
+    that:
+      - clearpass_cert_action in ['replace_p12', 'enroll_est', 'discover_cluster_uuids', 'discover_current_certs', 'preflight']
+    fail_msg: clearpass_cert_action must be replace_p12, enroll_est, discover_cluster_uuids, discover_current_certs, or preflight.
+
+- name: Run preflight flow
+  ansible.builtin.include_tasks: preflight.yml
+  when: clearpass_cert_action == 'preflight'
+
+- name: Run PKCS#12 replacement flow
+  ansible.builtin.include_tasks: replace_cert.yml
+  when: clearpass_cert_action == 'replace_p12'
+
+- name: Run EST enrollment flow
+  ansible.builtin.include_tasks: est_enroll.yml
+  when: clearpass_cert_action == 'enroll_est'
+
+- name: Run cluster UUID discovery flow
+  ansible.builtin.include_tasks: discover_cluster.yml
+  when: clearpass_cert_action == 'discover_cluster_uuids'
+
+- name: Run current certificate discovery flow
+  ansible.builtin.include_tasks: discover_current_certs.yml
+  when: clearpass_cert_action == 'discover_current_certs'

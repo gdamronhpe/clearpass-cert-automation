@@ -1,0 +1,45 @@
+---
+# EST and CSR defaults used by enroll_est.yml.
+
+# Valid service_name values: RADIUS, RadSec, HTTPS(RSA), HTTPS(ECC)
+# Required defaults: est_base_url, est_profile
+# est_profile is used in:
+# {{ est_base_url }}/.well-known/est/{{ est_profile }}/simpleenroll
+est_base_url: https://est.example.com
+est_profile: clearpass-radius
+
+# Optional: define multiple profile-specific EST/CSR defaults and reference them
+# from inventory mappings via `enrollment_profile`.
+est_enrollment_profiles:
+  radius_default:
+    est_base_url: https://est.example.com
+    est_profile: clearpass-radius
+    subject_CN: radius.example.com
+    private_key_type: 3072-bit rsa
+    digest_algorithm: SHA-256
+  radsec_default:
+    est_base_url: https://est.example.com
+    est_profile: clearpass-radsec
+    subject_CN: radsec.example.com
+    private_key_type: nist/secg curve over a 384 bit prime field
+    digest_algorithm: SHA-384
+
+# CSR options passed to ClearPass CSR generation.
+# Required: subject_CN, private_key_type, digest_algorithm
+# Secret required: private_key_password OR est_private_key_password (from Vault)
+# Optional: subject_O, subject_OU, subject_L, subject_ST, subject_C, subject_SAN
+subject_CN: radius.example.com
+subject_O: Example Corp
+subject_OU: Network Engineering
+subject_L: Austin
+subject_ST: Texas
+subject_C: US
+subject_SAN: DNS:radius.example.com,DNS:radsec.example.com
+# Preferred: set est_private_key_password in group_vars/vault.yml.
+# Alternative: set private_key_password directly here.
+private_key_password: "{{ est_private_key_password }}"
+private_key_type: 3072-bit rsa
+digest_algorithm: SHA-256
+
+# Optional override map (merged last).
+# est_csr_attributes: {}

@@ -1,0 +1,13 @@
+---
+# PKCS#12 certificate profiles used by replace_p12.yml.
+# Recommended: store per-profile passphrases in vaulted vars (group_vars/vault.yml).
+# If a profile passphrase is omitted, global pkcs12_passphrase is used as fallback.
+
+# Valid service_name values: HTTPS(RSA), HTTPS(ECC), RADIUS, RadSec
+certificate_profiles:
+  public_https:
+    pkcs12_file_url: https://certrepo.example.com/certs/public_https.p12
+    pkcs12_passphrase: "{{ vault_pkcs12_passphrase_public_https }}"
+  internal_admin:
+    pkcs12_file_url: https://certrepo.example.com/certs/internal_admin.p12
+    pkcs12_passphrase: "{{ vault_pkcs12_passphrase_internal_admin }}"

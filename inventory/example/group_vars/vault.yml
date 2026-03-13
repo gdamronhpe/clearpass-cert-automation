@@ -1,0 +1,17 @@
+# Encrypt this file with:
+# ansible-vault encrypt inventory/prod/group_vars/vault.yml
+#
+# Shared secrets used by all publishers
+# Global fallback PKCS#12 passphrase (optional if all profiles define their own)
+pkcs12_passphrase: CHANGE_ME
+
+# Recommended per-profile PKCS#12 passphrases (referenced from group_vars/p12.yml)
+vault_pkcs12_passphrase_public_https: CHANGE_ME
+vault_pkcs12_passphrase_internal_admin: CHANGE_ME
+
+est_username: CHANGE_ME
+est_password: CHANGE_ME
+est_private_key_password: CHANGE_ME
+#
+# Optional shared ClearPass client secret for all publishers:
+# clearpass_client_secret: CHANGE_ME_SHARED
